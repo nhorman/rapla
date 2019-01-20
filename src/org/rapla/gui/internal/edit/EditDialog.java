@@ -15,10 +15,8 @@ package org.rapla.gui.internal.edit;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.event.ActionEvent;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.lang.reflect.Method;
+import java.util.*;
 
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
@@ -31,6 +29,7 @@ import org.rapla.entities.Entity;
 import org.rapla.entities.IllegalAnnotationException;
 import org.rapla.entities.configuration.Preferences;
 import org.rapla.entities.domain.Reservation;
+import org.rapla.entities.domain.internal.AllocatableImpl;
 import org.rapla.entities.dynamictype.DynamicType;
 import org.rapla.facade.ModificationEvent;
 import org.rapla.facade.ModificationListener;
@@ -50,6 +49,7 @@ public class EditDialog<T extends Entity> extends RaplaGUIComponent implements M
     EditComponent<T> ui;
     boolean modal;
     private Collection<T> originals;
+    private Collection<T> OrigeditObjects;
 
     public EditDialog(RaplaContext sm,EditComponent<T> ui,boolean modal){
         super( sm);
@@ -65,16 +65,12 @@ public class EditDialog<T extends Entity> extends RaplaGUIComponent implements M
         return (EditControllerImpl) getService(EditController.class);
     }
 
-    public int start(Collection<T> editObjects,String title,Component owner)
-        throws
-            RaplaException
-    {
-            // sets for every object in this array an edit item in the logfile
-            originals= new ArrayList<T>();
-            Map<T, T> persistant = getModification().getPersistant( editObjects);
-            for (T entity : editObjects) 
+    public void setupOrig() throws RaplaException {
+           originals= new ArrayList<T>();
+            Map<T, T> persistant = getModification().getPersistant( OrigeditObjects);
+            for (T entity : OrigeditObjects)
             {
-              
+
                 getLogger().debug("Editing Object: " + entity);
                 @SuppressWarnings("unchecked")
                 Entity<T> mementable = persistant.get( entity);
@@ -95,6 +91,14 @@ public class EditDialog<T extends Entity> extends RaplaGUIComponent implements M
                 	originals = null;
                 }
             }
+    }
+
+    public int start(Collection<T> editObjects,String title,Component owner)
+        throws
+            RaplaException
+    {
+            OrigeditObjects = editObjects;
+            setupOrig();
 
             List<T> toEdit = new ArrayList<T>(editObjects);
             ui.setObjects(toEdit);
@@ -105,15 +109,17 @@ public class EditDialog<T extends Entity> extends RaplaGUIComponent implements M
             panel.add( editComponent, BorderLayout.CENTER);
             editComponent.setBorder(BorderFactory.createEmptyBorder(3,3,3,3));
             dlg = DialogUI.create(getContext(),owner,modal,panel,new String[] {
-                getString("save")
-                ,getString("cancel")
+                getString("save"), getString("save_and_continue"),
+                getString("cancel")
             });
             
             dlg.setAbortAction(new AbortAction());
             dlg.getButton(0).setAction(new SaveAction());
-            dlg.getButton(1).setAction(new AbortAction());
+            dlg.getButton(1).setAction(new SaveAndContinueAction());
+            dlg.getButton(2).setAction(new AbortAction());
             dlg.getButton(0).setIcon(getIcon("icon.save"));
-            dlg.getButton(1).setIcon(getIcon("icon.cancel"));
+            dlg.getButton(1).setIcon(getIcon("icon.save"));
+            dlg.getButton(2).setIcon(getIcon("icon.cancel"));
             dlg.setTitle(getI18n().format("edit.format",title));
             getUpdateModule().addModificationListener(this);
             dlg.addWindowListener(new DisposingTool(this));
@@ -172,37 +178,47 @@ public class EditDialog<T extends Entity> extends RaplaGUIComponent implements M
         }
     }
 
-    class SaveAction extends AbstractAction {
+    class SaveAndContinueAction extends AbstractAction {
         private static final long serialVersionUID = 1L;
 
         public void actionPerformed(ActionEvent evt) {
-        	try {
-				ui.mapToObjects();
-				bSaving = true;
+            try {
+                ui.mapToObjects();
+                bSaving = true;
 
-				// object which is processed by EditComponent
-				List<T> saveObjects = ui.getObjects();
-				Collection<T> entities = new ArrayList<T>();
+                // object which is processed by EditComponent
+                List<T> saveObjects = ui.getObjects();
+                List<T> newSaveObjects = new ArrayList<T>();
+                for (int i=0; i< saveObjects.size(); i++) {
+                    try {
+                        T tmp = (T)saveObjects.get(i).getClass().getMethod("cloneUnique").invoke(saveObjects.get(i));
+                        newSaveObjects.add(tmp);
+                    } catch (Exception e) {
+                        continue;
+                    }
+                }
+                saveObjects = newSaveObjects;
+                Collection<T> entities = new ArrayList<T>();
                 entities.addAll(saveObjects);
                 boolean canUndo = true;
                 Boolean isReservation = null;
                 for ( T obj: saveObjects)
                 {
-                   if ( obj instanceof Preferences || obj instanceof DynamicType || obj instanceof Category)
-                   {
-                       canUndo = false;
-                   }
-                   if ( obj instanceof Reservation )
-                   {
-                       if ( isReservation == null)
-                       {
-                           isReservation = true;
-                       }
-                   }
-                   else
-                   {
-                       isReservation = false;
-                   }
+                    if ( obj instanceof Preferences || obj instanceof DynamicType || obj instanceof Category)
+                    {
+                        canUndo = false;
+                    }
+                    if ( obj instanceof Reservation )
+                    {
+                        if ( isReservation == null)
+                        {
+                            isReservation = true;
+                        }
+                    }
+                    else
+                    {
+                        isReservation = false;
+                    }
                 }
                 if ( isReservation != null && isReservation)
                 {
@@ -219,10 +235,79 @@ public class EditDialog<T extends Entity> extends RaplaGUIComponent implements M
                 {
                     @SuppressWarnings({ "unchecked", "rawtypes" })
                     SaveUndo<T> saveCommand = new SaveUndo(getContext(), entities,  originals);
-    		        CommandHistory commandHistory = getModification().getCommandHistory();
+                    CommandHistory commandHistory = getModification().getCommandHistory();
                     commandHistory.storeAndExecute(saveCommand);
-                } 
-                else 
+                    setupOrig();
+                    dlg.setTitle("Saved Resource!");
+                    try {
+                        Thread.sleep(3000);
+                    } catch (InterruptedException ex) {
+                        //whatever
+                    }
+                    dlg.setTitle("Edit Resource");
+                }
+                else
+                {
+                    getModification().storeObjects( saveObjects.toArray( new Entity[] {}));
+                }
+            } catch (IllegalAnnotationException ex) {
+                showWarning(ex.getMessage(), dlg);
+            } catch (RaplaException ex) {
+                showException(ex, dlg);
+            }
+        }
+    }
+    class SaveAction extends AbstractAction {
+        private static final long serialVersionUID = 1L;
+
+        public void actionPerformed(ActionEvent evt) {
+            try {
+                ui.mapToObjects();
+                bSaving = true;
+
+                // object which is processed by EditComponent
+                List<T> saveObjects = ui.getObjects();
+                Collection<T> entities = new ArrayList<T>();
+                entities.addAll(saveObjects);
+                boolean canUndo = true;
+                Boolean isReservation = null;
+                for ( T obj: saveObjects)
+                {
+                    if ( obj instanceof Preferences || obj instanceof DynamicType || obj instanceof Category)
+                    {
+                        canUndo = false;
+                    }
+                    if ( obj instanceof Reservation )
+                    {
+                        if ( isReservation == null)
+                        {
+                            isReservation = true;
+                        }
+                    }
+                    else
+                    {
+                        isReservation = false;
+                    }
+                }
+                if ( isReservation != null && isReservation)
+                {
+                    @SuppressWarnings("unchecked")
+                    Collection<Reservation> castToReservation = (Collection<Reservation>) saveObjects;
+                    Component mainComponent = getMainComponent();
+                    ReservationController reservationController = getReservationController();
+                    if (!reservationController.save( castToReservation, mainComponent))
+                    {
+                        return;
+                    }
+                }
+                else if ( canUndo)
+                {
+                    @SuppressWarnings({ "unchecked", "rawtypes" })
+                    SaveUndo<T> saveCommand = new SaveUndo(getContext(), entities,  originals);
+                    CommandHistory commandHistory = getModification().getCommandHistory();
+                    commandHistory.storeAndExecute(saveCommand);
+                }
+                else
                 {
                     getModification().storeObjects( saveObjects.toArray( new Entity[] {}));
                 }
